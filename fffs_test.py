@@ -1,5 +1,17 @@
 from fffs import *
 
+def test_make_nested_dir():
+    fs = Filesystem(Store())
+    i1 = Image(fs.new_id(), fs.EMPTY_DIR, False)
+    i2 = fs.make_dir(i1, "dir1")
+    i3 = fs.make_dir(i2, "dir1/dir2")
+    assert fs.entry_exists(i3, "dir1")
+    assert fs.entry_exists(i3, "dir1/dir2")
+    root_dir = fs.get_dir(i3, ".")
+    assert len(root_dir.entries) == 1
+    dir1 = fs.get_dir(i3, "dir1")
+    assert len(dir1.entries) == 1
+
 def test_make_file():
     fs = Filesystem(Store())
     i1 = Image(fs.new_id(), fs.EMPTY_DIR, False)
@@ -13,14 +25,6 @@ def test_make_dir():
     i2 = fs.make_dir(i1, "dir")
     assert not fs.entry_exists(i1, "dir")
     assert fs.entry_exists(i2, "dir")
-
-def test_make_nested_dir():
-    fs = Filesystem(Store())
-    i1 = Image(fs.new_id(), fs.EMPTY_DIR, False)
-    i2 = fs.make_dir(i1, "dir1")
-    i3 = fs.make_dir(i2, "dir1/dir2")
-    assert fs.entry_exists(i3, "dir1")
-    assert fs.entry_exists(i3, "dir1/dir2")
 
 def test_overwrite_file():
     fs = Filesystem(Store())

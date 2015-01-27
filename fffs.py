@@ -116,6 +116,7 @@ class Filesystem:
         for dir_name in vpath_parts:
             if dir_name != ".":
                 de = parent_dir.get_entry(dir_name)
+                assert de != None, "get_entry(%r) on %r returned None" % (dir_name, parent_dir)
                 assert de.type == DIR_TYPE
                 parent_dir = self.store.get_dir(de.id)
             assert parent_dir != None
@@ -176,6 +177,8 @@ class Filesystem:
         return self.store.get_file(de.id)
 
     def get_dir(self, image, vpath):
+        if vpath == ".":
+            return image.dir
         de = self.get_entry(image, vpath)
         assert de.type == DIR_TYPE
         return self.store.get_dir(de.id)
