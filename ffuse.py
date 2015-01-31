@@ -92,10 +92,12 @@ class ImagesMount:
 
 import collections
 import os.path
+import uuid
 
 class TransientPaths:
-    def __init__(self):
+    def __init__(self, data_dir):
         self.m = collections.defaultdict(lambda: {})
+        self.data_dir = data_dir
 
     def get_files(self, image, path):
         return self.m[(image, path)].keys()
@@ -110,16 +112,36 @@ class TransientPaths:
         parent, filename = os.path.split(path)
         if parent == '':
             parent = "."
-        self.m[(image, parent)][filename] = True
+        data_file = os.path.join(self.data_dir, str(uuid.uuid4()))
+        self.m[(image, parent)][filename] = data_file
 
         print "transient_paths", self.m
         #raise Exception("fail")
 
+    def write(self, image, path, data, offset, fh):
+        parent, filename = os.path.split(path)
+        if parent == '':
+            parent = "."
+        data_file = self.m[(image, parent)][filename]
+        if os.path.exists(data_file):
+            size = os.path.getsize(data_file)
+        else:
+            size = 0
+        assert size == offset
+        with open(data_file, "a") as fd:
+            fd.write(data)
+        return len(data)
+
     def rm(self, image, path):
+        data_file = self.release(image, path)
+
+    def release(self, image, path):
         parent_dir, filename = os.path.split(path)
         if parent_dir == '':
             parent_dir = '.'
+        data_file = self.m[(image, parent_dir)][filename]
         del self.m[(image, parent_dir)][filename]
+        return data_file
 
 class FffsControl:
     def __init__(self, fs, images, name):
@@ -226,10 +248,6 @@ class ImageMount:
                 else:
                     return FILE_ATTRS
 
-    def read(self, path, size, offset, fh):
-        print "reading from image %s" % self.name
-        return ""
-
     def open(self, fd, path, flags):
         pass
 
@@ -239,7 +257,7 @@ class ImageMount:
         self.transient_paths.add(self.name, path)
 
     def write(self, path, data, offset, fh):
-        return len(data)
+        return self.transient_paths.write(self.name, path, data, offset, fh)
 
     def truncate(self, path, length, fh):
         pass
@@ -247,6 +265,17 @@ class ImageMount:
     def unlink(self, path):
         if self.transient_paths.is_transient_file(self.name, path):
             self.transient_paths.rm(self.name, path)
+
+    def release(self, path, fh):
+        print "release >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+        if self.transient_paths.is_transient_file(self.name, path):
+            filename = self.transient_paths.release(self.name, path)
+            image_id = self.images[self.name]
+            image = self.store.get_image(image_id)
+            print "set_file(%s, %s, %s)" % (image, path, filename)
+            new_image = self.fs.set_file(image, path, filename)
+            self.update_image(new_image)
+
 
 class FuseAdapter(LoggingMixIn, Operations):
     def __init__(self):
@@ -260,7 +289,7 @@ class FuseAdapter(LoggingMixIn, Operations):
         self.now = time.time()
         self.images = {"image1": image1.id}
         self.root_mount = RootMount(self.images)
-        self.transient_paths = TransientPaths()
+        self.transient_paths = TransientPaths("datafiles")
         self.images_mount = ImagesMount(self.fs, self.images, self.store, self.transient_paths)
         self.next_fd = 0
 
@@ -330,6 +359,11 @@ class FuseAdapter(LoggingMixIn, Operations):
     def unlink(self, path):
         vpath, delegate = self.get_delegate(path)
         delegate.unlink(vpath)
+
+    def release(self, path, fh):
+        vpath, delegate = self.get_delegate(path)
+        delegate.release(vpath,fh)
+        return 0
 
     def getxattr(self, path, name, position=0):
         return ''       # Should return ENOATTR
