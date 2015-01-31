@@ -27,8 +27,13 @@ def extract_prefix(path):
 now = time.time()
 DIR_ATTRS = dict(st_mode=(S_IFDIR | 0755), st_ctime=now,
                        st_mtime=now, st_atime=now, st_nlink=2)
-FILE_ATTRS = dict(st_mode=(S_IFREG | 0755), st_nlink=1,
+EMPTY_FILE_ATTRS = dict(st_mode=(S_IFREG | 0755), st_nlink=1,
                         st_size=0, st_ctime=now, st_mtime=now,
+                        st_atime=now)
+
+def mk_file_attrs(size):
+    return dict(st_mode=(S_IFREG | 0755), st_nlink=1,
+                        st_size=size, st_ctime=now, st_mtime=now,
                         st_atime=now)
 
 class RootMount:
@@ -118,6 +123,17 @@ class TransientPaths:
         print "transient_paths", self.m
         #raise Exception("fail")
 
+    def get_size(self, image, path):
+        parent, filename = os.path.split(path)
+        if parent == '':
+            parent = "."
+        data_file = self.m[(image, parent)][filename]
+        if os.path.exists(data_file):
+            size = os.path.getsize(data_file)
+        else:
+            size = 0
+        return size
+
     def write(self, image, path, data, offset, fh):
         parent, filename = os.path.split(path)
         if parent == '':
@@ -160,7 +176,7 @@ class FffsControl:
         if path == ".fffs":
             return DIR_ATTRS
         elif path in ['.fffs/id']:
-            return FILE_ATTRS
+            return EMPTY_FILE_ATTRS
         else:
             raise FuseOSError(ENOENT)
 
@@ -236,7 +252,8 @@ class ImageMount:
         elif path == '.fffs':
             return DIR_ATTRS
         elif self.transient_paths.is_transient_file(self.name, path):
-            return FILE_ATTRS
+            size = self.transient_paths.get_size(self.name, path)
+            return mk_file_attrs(size)
         else:
             #print "%r not in %r" % (path, self.transient_paths)
             entry = self.fs.get_entry(self.image, path)
@@ -246,7 +263,8 @@ class ImageMount:
                 if entry.type == fffs.DIR_TYPE:
                     return DIR_ATTRS
                 else:
-                    return FILE_ATTRS
+                    file = self.store.get_file(entry.id)
+                    return mk_file_attrs(file.size)
 
     def open(self, fd, path, flags):
         pass
@@ -267,29 +285,23 @@ class ImageMount:
             self.transient_paths.rm(self.name, path)
 
     def release(self, path, fh):
-        print "release >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
         if self.transient_paths.is_transient_file(self.name, path):
             filename = self.transient_paths.release(self.name, path)
             image_id = self.images[self.name]
             image = self.store.get_image(image_id)
-            print "set_file(%s, %s, %s)" % (image, path, filename)
             new_image = self.fs.set_file(image, path, filename)
             self.update_image(new_image)
 
 
 class FuseAdapter(LoggingMixIn, Operations):
     def __init__(self):
-        self.store = fffs.Store()
+        self.store = fffs.Store("datafiles")
         self.fs = fffs.Filesystem(self.store)
 
-        file1 = self.store.new_file("xxxxxx")
-        dir1 = self.store.new_dir([fffs.DirEntry("file1", fffs.FILE_TYPE, file1.id)])
-        image1 = self.store.new_image(dir1, False)
-
         self.now = time.time()
-        self.images = {"image1": image1.id}
+        self.images = {}
         self.root_mount = RootMount(self.images)
-        self.transient_paths = TransientPaths("datafiles")
+        self.transient_paths = TransientPaths(self.store.data_path)
         self.images_mount = ImagesMount(self.fs, self.images, self.store, self.transient_paths)
         self.next_fd = 0
 

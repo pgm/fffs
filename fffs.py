@@ -6,6 +6,7 @@ __author__ = 'pmontgom'
 #   when making dir, all parent dirs must exist
 #   when creating a dir, all parent dirs must exist
 #   when renaming dir, source must exist and dest must not exist
+import os.path
 
 class Dir:
     def __init__(self, id, entries):
@@ -23,10 +24,11 @@ class Dir:
         return m[0]
 
 class File:
-    def __init__(self, id, path):
+    def __init__(self, id, path, size):
         assert isinstance(id, int)
         self.id = id
         self.path = path
+        self.size = size
 
 class DirEntry:
     def __init__(self, name, type, id):
@@ -44,11 +46,12 @@ class Image:
         self.is_frozen = is_frozen
 
 class Store:
-    def __init__(self):
+    def __init__(self, data_path):
         self.dirs = {}
         self.files = {}
         self.images = {}
         self.next_id = 1
+        self.data_path = data_path
     def get_dir(self, id):
         return self.dirs[id]
     def get_file(self, id):
@@ -76,7 +79,8 @@ class Store:
         return f
     def new_file(self, path):
         assert path != None
-        f = File(self.new_id(), path)
+        size = os.path.getsize(path)
+        f = File(self.new_id(), path, size)
         self.store_file(f)
         return f
 
