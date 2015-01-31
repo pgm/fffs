@@ -162,6 +162,14 @@ class Filesystem:
         image_1 = self.unlink(image, existing_vpath)
         return self.set_file(image_1, new_vpath, old_file)
 
+    def read(self, image, path, size, offset):
+        file = self.get_file(image, path)
+        fd = open(file.path, "r")
+        fd.seek(offset)
+        buffer = fd.read(size)
+        fd.close()
+        return buffer
+
     def unlink(self, image, vpath):
         new_dir = self.clone_recursive_clone_with_replacement(image.dir, vpath, None, None)
         return self.store.new_image(new_dir, False)

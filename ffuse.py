@@ -16,7 +16,6 @@ import fffs
 # then change Store to be persistent
 
 
-
 def extract_prefix(path):
     assert path[0] == '/'
     i = path.find('/', 1)
@@ -53,10 +52,11 @@ class RootMount:
 
 class ImagesMount:
     # handles all operations on path "/image"
-    def __init__(self, fs, image_map, store):
+    def __init__(self, fs, image_map, store, transient_paths):
         self.fs = fs
         self.image_map = image_map
         self.store = store
+        self.transient_paths = transient_paths
 
     def mkdir(self, path, mode):
         if path in self.image_map:
@@ -81,6 +81,7 @@ class ImagesMount:
         dir = image.dir #self.fs.get_dir(image, path)
         for entry in dir.entries:
             names.append(entry.name)
+        names.extend(self.transient_paths.get_files(path, "."))
         return names
 
     def getattr(self, path, fh=None):
@@ -89,14 +90,76 @@ class ImagesMount:
         else:
             raise FuseOSError(ENOENT)
 
+import collections
+import os.path
+
+class TransientPaths:
+    def __init__(self):
+        self.m = collections.defaultdict(lambda: {})
+
+    def get_files(self, image, path):
+        return self.m[(image, path)].keys()
+
+    def is_transient_file(self, image, path):
+        parent_dir, filename = os.path.split(path)
+        if parent_dir == '':
+            parent_dir = '.'
+        return filename in self.m[(image, parent_dir)]
+
+    def add(self, image, path):
+        parent, filename = os.path.split(path)
+        if parent == '':
+            parent = "."
+        self.m[(image, parent)][filename] = True
+
+        print "transient_paths", self.m
+        #raise Exception("fail")
+
+    def rm(self, image, path):
+        parent_dir, filename = os.path.split(path)
+        if parent_dir == '':
+            parent_dir = '.'
+        del self.m[(image, parent_dir)][filename]
+
+class FffsControl:
+    def __init__(self, fs, images, name):
+        self.name = name
+        self.images = images
+        self.fs = fs
+
+    def readdir(self, path, fh):
+        if path == ".fffs":
+            names = ['.', '..', 'id']
+            return names
+        else:
+            raise FuseOSError(ENOTDIR)
+
+    def getattr(self, path, fh=None):
+        if path == ".fffs":
+            return DIR_ATTRS
+        elif path in ['.fffs/id']:
+            return FILE_ATTRS
+        else:
+            raise FuseOSError(ENOENT)
+
+    def read(self, path, size, offset, fh):
+        if path == ".fffs/id":
+            return str(self.images[self.name])[offset:offset+size]
+        else:
+            raise FuseOSError(ENOENT)
+
+    def open(self, fd, path, flags):
+        pass
+
 class ImageMount:
     # handles all operations on path "/image/dir*"
-    def __init__(self, fs, image_id, store, images, name):
+    def __init__(self, fs, image_id, store, images, name, transient_paths):
         self.fs = fs
         self.image_id = image_id
         self.store = store
         self.images = images
         self.name = name
+        self.transient_paths = transient_paths
 
     @property
     def image(self):
@@ -128,6 +191,9 @@ class ImageMount:
         new_image = self.fs.unlink(self.image, path)
         self.update_image(new_image)
 
+    def read(self, path, size, offset, fh):
+        return self.fs.read(self.image, path, size, offset)
+
     def readdir(self, path, fh):
         names = ['.', '..']
         entry = self.fs.get_entry(self.image, path)
@@ -140,13 +206,17 @@ class ImageMount:
         dir = self.store.get_dir(entry.id)
         for entry in dir.entries:
             names.append(entry.name)
-
         return names
 
     def getattr(self, path, fh=None):
         if path == ".":
             return DIR_ATTRS
+        elif path == '.fffs':
+            return DIR_ATTRS
+        elif self.transient_paths.is_transient_file(self.name, path):
+            return FILE_ATTRS
         else:
+            #print "%r not in %r" % (path, self.transient_paths)
             entry = self.fs.get_entry(self.image, path)
             if entry == None:
                 raise FuseOSError(ENOENT)
@@ -156,6 +226,27 @@ class ImageMount:
                 else:
                     return FILE_ATTRS
 
+    def read(self, path, size, offset, fh):
+        print "reading from image %s" % self.name
+        return ""
+
+    def open(self, fd, path, flags):
+        pass
+
+    def create(self, fd, path, flags, fi):
+        #self.transient_paths[fd] = path
+        #print "Added %r to transient paths: %r" % (path, self.transient_paths)
+        self.transient_paths.add(self.name, path)
+
+    def write(self, path, data, offset, fh):
+        return len(data)
+
+    def truncate(self, path, length, fh):
+        pass
+
+    def unlink(self, path):
+        if self.transient_paths.is_transient_file(self.name, path):
+            self.transient_paths.rm(self.name, path)
 
 class FuseAdapter(LoggingMixIn, Operations):
     def __init__(self):
@@ -169,7 +260,9 @@ class FuseAdapter(LoggingMixIn, Operations):
         self.now = time.time()
         self.images = {"image1": image1.id}
         self.root_mount = RootMount(self.images)
-        self.images_mount = ImagesMount(self.fs, self.images, self.store)
+        self.transient_paths = TransientPaths()
+        self.images_mount = ImagesMount(self.fs, self.images, self.store, self.transient_paths)
+        self.next_fd = 0
 
     def get_delegate(self, path):
         if path == "/":
@@ -180,9 +273,10 @@ class FuseAdapter(LoggingMixIn, Operations):
         if rest == None:
             print "returning", prefix, self.images_mount
             return prefix, self.images_mount
-
+        elif rest.startswith(".fffs"):
+            return rest, FffsControl(self.fs, self.images, prefix)
         if prefix in self.images:
-            m = ImageMount(self.fs, self.images[prefix], self.store, self.images, prefix)
+            m = ImageMount(self.fs, self.images[prefix], self.store, self.images, prefix, self.transient_paths)
             print "returning", rest, m
             return rest, m
 
@@ -204,11 +298,46 @@ class FuseAdapter(LoggingMixIn, Operations):
         vpath, delegate = self.get_delegate(path)
         return delegate.rmdir(vpath)
 
+    def read(self, path, size, offset, fh):
+        vpath, delegate = self.get_delegate(path)
+        print "calling read(%r, %r, %r, %r)" % (vpath, size, offset, fh)
+        return delegate.read(vpath, size, offset, fh)
+
+    def open(self, path, flags):
+        vpath, delegate = self.get_delegate(path)
+        # TODO: is fd necessary?
+        fd = self.next_fd
+        self.next_fd += 1
+        delegate.open(fd, vpath, flags)
+        return fd
+
+    def truncate(self, path, length, fh=None):
+        vpath, delegate = self.get_delegate(path)
+        return delegate.truncate(path, length, fh)
+
+    def write(self, path, data, offset, fh):
+        vpath, delegate = self.get_delegate(path)
+        return delegate.write(vpath, data, offset, fh)
+
+    def create(self, path, mode, fi=None):
+        vpath, delegate = self.get_delegate(path)
+        # TODO: is fd necessary?
+        fd = self.next_fd
+        self.next_fd += 1
+        delegate.create(fd, vpath, mode, fi)
+        return fd
+
+    def unlink(self, path):
+        vpath, delegate = self.get_delegate(path)
+        delegate.unlink(vpath)
+
     def getxattr(self, path, name, position=0):
         return ''       # Should return ENOATTR
 
     def listxattr(self, path):
         return []
+
+
 
 if __name__ == '__main__':
     import logging
@@ -218,4 +347,4 @@ if __name__ == '__main__':
         exit(1)
 
     logging.getLogger().setLevel(logging.DEBUG)
-    fuse = FUSE(FuseAdapter(), sys.argv[1], foreground=True)
+    fuse = FUSE(FuseAdapter(), sys.argv[1], foreground=True, direct_io=True)
